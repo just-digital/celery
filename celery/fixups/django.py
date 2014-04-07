@@ -157,7 +157,11 @@ class DjangoWorkerFixup(object):
         signals.task_prerun.connect(self.on_task_prerun)
         signals.task_postrun.connect(self.on_task_postrun)
         signals.worker_process_init.connect(self.on_worker_process_init)
-        self.validate_models()
+        # For one, this fails a simple unicode coercion, and then also
+        # fails to understand Django's custom auth 'swapped' model.
+        # I'm pretty sure that get_validation_errors is being called at
+        # the wrong time. I'm turning it off until proper investigation.
+        # self.validate_models()
         self.close_database()
         self.close_cache()
         return self
