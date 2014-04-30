@@ -127,9 +127,9 @@ def maybe_patch_concurrency(argv=sys.argv,
         concurrency.get_implementation(pool)
 
 # Lazy loading
-from .five import recreate_module
+from celery import five
 
-old_module, new_module = recreate_module(  # pragma: no cover
+old_module, new_module = five.recreate_module(  # pragma: no cover
     __name__,
     by_module={
         'celery.app': ['Celery', 'bugreport', 'shared_task'],
@@ -144,8 +144,9 @@ old_module, new_module = recreate_module(  # pragma: no cover
     __package__='celery', __file__=__file__,
     __path__=__path__, __doc__=__doc__, __version__=__version__,
     __author__=__author__, __contact__=__contact__,
-    __homepage__=__homepage__, __docformat__=__docformat__,
+    __homepage__=__homepage__, __docformat__=__docformat__, five=five,
     VERSION=VERSION, SERIES=SERIES, VERSION_BANNER=VERSION_BANNER,
+    version_info_t=version_info_t,
     maybe_patch_concurrency=maybe_patch_concurrency,
     _find_option_with_arg=_find_option_with_arg,
 )

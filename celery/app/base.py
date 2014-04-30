@@ -27,23 +27,27 @@ from celery import platforms
 from celery import signals
 from celery._state import (
     _task_stack, get_current_app, _set_current_app, set_default_app,
-    _register_app, get_current_worker_task,
+    _register_app, get_current_worker_task, connect_on_app_finalize,
+    _announce_app_finalized,
 )
 from celery.exceptions import AlwaysEagerIgnored, ImproperlyConfigured
 from celery.five import items, values
 from celery.loaders import get_loader_cls
 from celery.local import PromiseProxy, maybe_evaluate
+from celery.utils.dispatch import Signal
 from celery.utils.functional import first, maybe_list
 from celery.utils.imports import instantiate, symbol_by_name
 from celery.utils.objects import mro_lookup
 
 from .annotations import prepare as prepare_annotations
-from .builtins import shared_task, load_shared_tasks
 from .defaults import DEFAULTS, find_deprecated_settings
 from .registry import TaskRegistry
 from .utils import (
     AppPickler, Settings, bugreport, _unpickle_app, _unpickle_app_v2, appstr,
 )
+
+# Load all builtin tasks
+from . import builtins  # noqa
 
 __all__ = ['Celery']
 
@@ -114,6 +118,15 @@ class Celery(object):
     _pool = None
     builtin_fixups = BUILTIN_FIXUPS
 
+    #: Signal sent when app is loading configuration.
+    on_configure = None
+
+    #: Signal sent after app has prepared the configuration.
+    on_after_configure = None
+
+    #: Signal sent after app has been finalized.
+    on_after_finalize = None
+
     def __init__(self, main=None, loader=None, backend=None,
                  amqp=None, events=None, log=None, control=None,
                  set_as_current=True, accept_magic_kwargs=False,
@@ -168,6 +181,13 @@ class Celery(object):
         if self.set_as_current:
             self.set_current()
 
+        # Signals
+        if self.on_configure is None:
+            # used to be a method pre 3.2
+            self.on_configure = Signal()
+        self.on_after_configure = Signal()
+        self.on_after_finalize = Signal()
+
         self.on_init()
         _register_app(self)
 
@@ -208,8 +228,8 @@ class Celery(object):
             # a differnt task instance.  This makes sure it will always use
             # the task instance from the current app.
             # Really need a better solution for this :(
-            from . import shared_task as proxies_to_curapp
-            return proxies_to_curapp(*args, _force_evaluate=True, **opts)
+            from . import shared_task
+            return shared_task(*args, _force_evaluate=True, **opts)
 
         def inner_create_task_cls(shared=True, filter=None, **opts):
             _filt = filter  # stupid 2to3
@@ -218,7 +238,7 @@ class Celery(object):
                 if shared:
                     cons = lambda app: app._task_from_fun(fun, **opts)
                     cons.__name__ = fun.__name__
-                    shared_task(cons)
+                    connect_on_app_finalize(cons)
                 if self.accept_magic_kwargs:  # compat mode
                     task = self._task_from_fun(fun, **opts)
                     if filter:
@@ -271,7 +291,7 @@ class Celery(object):
                 if auto and not self.autofinalize:
                     raise RuntimeError('Contract breach: app not finalized')
                 self.finalized = True
-                load_shared_tasks(self)
+                _announce_app_finalized(self)
 
                 pending = self._pending
                 while pending:
@@ -279,6 +299,8 @@ class Celery(object):
 
                 for task in values(self._tasks):
                     task.bind(self)
+
+                self.on_after_finalize.send(sender=self)
 
     def add_defaults(self, fun):
         if not callable(fun):
@@ -452,12 +474,12 @@ class Celery(object):
             self.loader)
         return backend(app=self, url=url)
 
-    def on_configure(self):
-        """Callback calld when the app loads configuration"""
-        pass
-
     def _get_config(self):
-        self.on_configure()
+        if isinstance(self.on_configure, Signal):
+            self.on_configure.send(sender=self)
+        else:
+            # used to be a method pre 3.2
+            self.on_configure()
         if self._config_source:
             self.loader.config_from_object(self._config_source)
         self.configured = True
@@ -471,6 +493,7 @@ class Celery(object):
         if self._preconf:
             for key, value in items(self._preconf):
                 setattr(s, key, value)
+        self.on_after_configure.send(sender=self, source=s)
         return s
 
     def _after_fork(self, obj_):

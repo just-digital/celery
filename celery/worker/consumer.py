@@ -534,12 +534,15 @@ class Events(bootsteps.StartStopStep):
 class Heart(bootsteps.StartStopStep):
     requires = (Events, )
 
-    def __init__(self, c, without_heartbeat=False, **kwargs):
+    def __init__(self, c, without_heartbeat=False, heartbeat_interval=None,
+                 **kwargs):
         self.enabled = not without_heartbeat
+        self.heartbeat_interval = heartbeat_interval
         c.heart = None
 
     def start(self, c):
-        c.heart = heartbeat.Heart(c.timer, c.event_dispatcher)
+        c.heart = heartbeat.Heart(c.timer, c.event_dispatcher,
+            self.heartbeat_interval)
         c.heart.start()
 
     def stop(self, c):
@@ -589,11 +592,27 @@ class Tasks(bootsteps.StartStopStep):
 
     def start(self, c):
         c.update_strategies()
+
+        # - RabbitMQ 3.3 completely redefines how basic_qos works..
+        # This will detect if the new qos smenatics is in effect,
+        # and if so make sure the 'apply_global' flag is set on qos updates.
+        qos_global = not c.connection.qos_semantics_matches_spec
+
+        # set initial prefetch count
+        c.connection.default_channel.basic_qos(
+            0, c.initial_prefetch_count, qos_global,
+        )
+
         c.task_consumer = c.app.amqp.TaskConsumer(
             c.connection, on_decode_error=c.on_decode_error,
         )
-        c.qos = QoS(c.task_consumer.qos, c.initial_prefetch_count)
-        c.qos.update()  # set initial prefetch count
+
+        def set_prefetch_count(prefetch_count):
+            return c.task_consumer.qos(
+                prefetch_count=prefetch_count,
+                apply_global=qos_global,
+            )
+        c.qos = QoS(set_prefetch_count, c.initial_prefetch_count)
 
     def stop(self, c):
         if c.task_consumer:
